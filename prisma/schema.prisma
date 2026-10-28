@@ -1,0 +1,139 @@
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model User {
+  id           String    @id @default(uuid())
+  email        String    @unique
+  displayName  String
+  passwordHash String
+  role         String    // "CITIZEN", "ISSUER", "VERIFIER", "ADMIN"
+  status       String    @default("ACTIVE")
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  credentials      Credential[]          @relation("SubjectCredentials")
+  issuerProfile    Issuer?
+  auditEvents      AuditEvent[]
+  consentRecords   ConsentRecord[]
+  requestsReceived VerificationRequest[] @relation("CitizenRequests")
+}
+
+model Issuer {
+  id               String       @id @default(uuid())
+  userId           String       @unique
+  user             User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organizationName String
+  did              String       @unique
+  publicKeyJwk     String       // JSON string of public key JWK
+  trustStatus      String       @default("TRUSTED") // "TRUSTED" or "UNTRUSTED"
+  createdAt        DateTime     @default(now())
+
+  issuedCredentials Credential[] @relation("IssuedCredentials")
+}
+
+model Credential {
+  id               String    @id @default(uuid())
+  subjectUserId    String
+  subjectUser      User      @relation("SubjectCredentials", fields: [subjectUserId], references: [id])
+  issuerId         String
+  issuer           Issuer    @relation("IssuedCredentials", fields: [issuerId], references: [id])
+  type             String    // "IdentityCredential", "AgeCredential", "StudentCredential", "AddressCredential"
+  claimsData       String    // Salted attributes JSON (off-chain only)
+  claimsHashes     String    // JSON array of attribute hashes for selective disclosure
+  credentialHash   String    // SHA-256 hash of credential canonical representation
+  jwtRaw           String    // Signed VC-JWT
+  status           String    @default("ACTIVE") // "ACTIVE", "REVOKED", "EXPIRED"
+  revocationReason String?
+  revokedAt        DateTime?
+  issuedAt         DateTime  @default(now())
+  expiresAt        DateTime
+  ledgerTxRef      String?   // Reference ID in simulated ledger
+
+  @@index([subjectUserId])
+  @@index([issuerId])
+  @@index([credentialHash])
+}
+
+model VerificationRequest {
+  id                  String   @id @default(uuid())
+  verifierId          String
+  verifierName        String
+  subjectUserId       String
+  subjectUser         User     @relation("CitizenRequests", fields: [subjectUserId], references: [id])
+  purpose             String
+  requestedAttributes String   // JSON array of requested attribute keys
+  validitySeconds     Int      @default(3600)
+  status              String   @default("PENDING") // "PENDING", "APPROVED", "DECLINED", "EXPIRED"
+  createdAt           DateTime @default(now())
+  expiresAt           DateTime
+
+  consentRecord       ConsentRecord?
+  verificationEvents  VerificationEvent[]
+
+  @@index([subjectUserId])
+}
+
+model ConsentRecord {
+  id                 String              @id @default(uuid())
+  holderId           String
+  holder             User                @relation(fields: [holderId], references: [id])
+  requestId          String              @unique
+  request            VerificationRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  decision           String              // "APPROVED" or "DECLINED"
+  approvedAttributes String              // JSON array of approved attribute keys
+  decidedAt          DateTime            @default(now())
+}
+
+model VerificationEvent {
+  id              String              @id @default(uuid())
+  requestId       String?
+  request         VerificationRequest? @relation(fields: [requestId], references: [id], onDelete: SetNull)
+  verifierId      String
+  verifierName    String
+  outcome         String              // "VALID", "INVALID", "EXPIRED", "REVOKED", "UNABLE_TO_VERIFY"
+  reasonCode      String?             // "MALFORMED", "BAD_SIGNATURE", "UNTRUSTED_ISSUER", "REVOKED", "EXPIRED", "LEDGER_UNAVAILABLE", "DISCLOSURE_MISMATCH"
+  checksJson      String              // JSON array of check items { name, passed, message }
+  disclosedClaims String              // JSON string of approved disclosed claims only
+  createdAt       DateTime            @default(now())
+
+  @@index([verifierId])
+}
+
+model AuditEvent {
+  id            String   @id @default(uuid())
+  actorId       String?
+  actor         User?    @relation(fields: [actorId], references: [id], onDelete: SetNull)
+  action        String   // "USER_LOGIN", "USER_LOGOUT", "ISSUE_CREDENTIAL", "REVOKE_CREDENTIAL", "CONSENT_SHARE", "VERIFY_PROOF", "LEDGER_OUTAGE_TOGGLE"
+  targetRef     String?  // Reference identifier (e.g. Credential ID or User ID)
+  result        String   // "SUCCESS" or "FAILURE"
+  correlationId String
+  createdAt     DateTime @default(now())
+
+  @@index([actorId])
+  @@index([action])
+}
+
+model LedgerEvent {
+  index       Int      @id @default(autoincrement())
+  eventType   String   // "ISSUANCE", "REVOCATION"
+  recordId    String   // credentialId
+  issuerDid   String
+  payloadHash String   // SHA-256(canonical metadata)
+  prevHash    String   // SHA-256 of previous record (or "0" for genesis)
+  hash        String   // SHA-256(prevHash + event canonical string)
+  createdAt   DateTime @default(now())
+
+  @@index([recordId])
+}
+
+model SystemSetting {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt
+}
